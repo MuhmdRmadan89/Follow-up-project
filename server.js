@@ -5,28 +5,23 @@ const multer = require("multer");
 const sqlite3 = require("sqlite3").verbose();
 const { v4: uuidv4 } = require("uuid");
 const dayjs = require("dayjs");
-const cloudinary = require("cloudinary").v2;
+const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 
 const app = express();
-const PORT = process.env.PORT || 3000;;
+const PORT = process.env.PORT || 3000;
 
 app.set("view engine", "ejs");
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ====== DEBUG ENV ======
-console.log("Cloud Name:", process.env.CLOUDINARY_CLOUD_NAME);
-console.log("API Key:", process.env.CLOUDINARY_API_KEY);
+// ===== SUPABASE CONFIG =====
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
-// ====== CLOUDINARY CONFIG ======
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-// ====== TEMP FOLDER ======
+// ===== TEMP FOLDER =====
 if (!fs.existsSync("temp")) {
   fs.mkdirSync("temp");
 }
@@ -44,35 +39,29 @@ db.serialize(() => {
     token TEXT,
     token_expiry TEXT,
     status TEXT DEFAULT 'Sent',
-    has_new_feedback INTEGER DEFAULT 0,
     created_at TEXT
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id INTEGER,
-    file_url TEXT,
+    file_path TEXT,
     version_number INTEGER,
     uploaded_at TEXT
   )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER,
-    message TEXT,
-    created_at TEXT
-  )`);
 });
 
-// ===== DASHBOARD =====
+// ===== ROOT REDIRECT =====
 app.get("/", (req, res) => {
   res.redirect("/admin");
 });
+
+// ===== DASHBOARD =====
 app.get("/admin", (req, res) => {
 
   db.all(`
     SELECT o.*, 
-    (SELECT file_url FROM versions 
+    (SELECT file_path FROM versions 
      WHERE order_id = o.id 
      ORDER BY version_number DESC LIMIT 1) as latest_file,
     (SELECT MAX(version_number) FROM versions 
@@ -81,20 +70,7 @@ app.get("/admin", (req, res) => {
     ORDER BY o.id DESC
   `, [], (err, orders) => {
 
-    db.all("SELECT * FROM feedback", [], (err2, feedbacks) => {
-
-      const grouped = {};
-      feedbacks.forEach(f => {
-        if (!grouped[f.order_id]) grouped[f.order_id] = [];
-        grouped[f.order_id].push(f);
-      });
-
-      orders.forEach(o => {
-        o.feedbacks = grouped[o.id] || [];
-      });
-
-      res.render("dashboard", { orders });
-    });
+    res.render("dashboard", { orders });
   });
 });
 
@@ -105,11 +81,22 @@ app.post("/admin/upload", upload.single("file"), async (req, res) => {
 
   try {
 
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      resource_type: "auto"
-    });
+    const fileName = `${Date.now()}-${req.file.originalname}`;
 
-    fs.unlinkSync(req.file.path); // remove temp file
+    const fileBuffer = fs.readFileSync(req.file.path);
+
+    const { error } = await supabase.storage
+      .from("pdf-files")
+      .upload(fileName, fileBuffer, {
+        contentType: "application/pdf"
+      });
+
+    fs.unlinkSync(req.file.path);
+
+    if (error) {
+      console.error(error);
+      return res.send("Supabase upload error");
+    }
 
     const token = uuidv4();
     const expiry = dayjs().add(7, "day").toISOString();
@@ -131,11 +118,11 @@ app.post("/admin/upload", upload.single("file"), async (req, res) => {
 
         db.run(
           `INSERT INTO versions 
-          (order_id, file_url, version_number, uploaded_at)
+          (order_id, file_path, version_number, uploaded_at)
           VALUES (?, ?, ?, ?)`,
           [
             orderId,
-            result.secure_url,
+            fileName,
             1,
             dayjs().toISOString()
           ],
@@ -145,12 +132,11 @@ app.post("/admin/upload", upload.single("file"), async (req, res) => {
     );
 
   } catch (err) {
-    console.error("CLOUDINARY ERROR:", err);
-    res.send("Cloudinary ERROR: " + JSON.stringify(err));
+    console.error(err);
+    res.send("Upload failed");
   }
 });
 
-// ===== START SERVER =====
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
