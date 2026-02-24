@@ -65,6 +65,9 @@ db.serialize(() => {
 });
 
 // ===== DASHBOARD =====
+app.get("/", (req, res) => {
+  res.redirect("/admin");
+});
 app.get("/admin", (req, res) => {
 
   db.all(`
