@@ -94,8 +94,8 @@ app.post("/admin/upload", upload.single("file"), async (req, res) => {
     fs.unlinkSync(req.file.path);
 
     if (error) {
-      console.error(error);
-      return res.send("Supabase upload error");
+    console.error("SUPABASE ERROR:", error);
+    return res.send("SUPABASE ERROR: " + JSON.stringify(error));
     }
 
     const token = uuidv4();
